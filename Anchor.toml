@@ -2,13 +2,13 @@
 seeds = false
 skip-lint = false
 [programs.localnet]
-safe_transfer = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+safe_transfer = "BpCbo5wS53SLmnppnPeZCi271V87s4MkiT9YijMLxC36"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "testnet"
+cluster = "devnet"
 wallet = "/home/linktel/.config/solana/id.json"
 
 [scripts]
