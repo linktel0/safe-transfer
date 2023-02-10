@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::system_program;
 use anchor_lang::solana_program::entrypoint::ProgramResult;
 use anchor_spl::{token::{CloseAccount, Mint, Token, TokenAccount, Transfer}};
 
@@ -19,7 +20,97 @@ pub enum ErrorCode {
 #[program]
 pub mod safe_transfer {
     use super::*;
+
+    pub fn initialize_sol(ctx: Context<InitializeSol>, transfer_idx: u64, amount: u64) -> ProgramResult {
+        
+        let transfer_state = &mut ctx.accounts.transfer_state;
+        transfer_state.transfer_idx = transfer_idx;
+        transfer_state.sender = ctx.accounts.sender.key().clone();
+        transfer_state.receiver = ctx.accounts.receiver.key().clone();
+        transfer_state.amount = amount;
+
+        msg!("Initialized new Safe Transfer Sol for {}", amount);
+
+        let transfer_instruction = system_program::Transfer{
+            from: ctx.accounts.sender.to_account_info(),
+            to: transfer_state.to_account_info(),
+        };
+        
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(), 
+            transfer_instruction
+        );
+        system_program::transfer(cpi_context, amount)?;
+        transfer_state.stage = Stage::FundsDeposited.to_code();
+        
+        Ok(())
+    }
+
+    pub fn cancel_sol(ctx: Context<CancelSol>, transfer_idx: u64) -> Result<()> {
+        
+        let current_stage = Stage::from(ctx.accounts.transfer_state.stage)?;
+        let is_valid_stage = current_stage == Stage::FundsDeposited || current_stage == Stage::PullBackComplete;
+        if !is_valid_stage {
+            msg!("Stage is invalid, state stage is {}", ctx.accounts.transfer_state.stage);
+            return Err(ErrorCode::StageInvalid.into());
+        }
+
+        let amount = ctx.accounts.transfer_state.amount;
+        let seed0 = b"state";
+        let seed1 = transfer_idx.to_le_bytes(); 
+        let seed2 = ctx.accounts.sender.key();
+        let seed3 = ctx.accounts.receiver.key();
+
+        let (_transfer_state, _transfer_state_bump) =
+            Pubkey::find_program_address(&[
+                seed0.as_ref(),
+                seed1.as_ref(),
+                seed2.as_ref(),
+                seed3.as_ref()
+            ],    
+            ctx.program_id);
+   
+        if ctx.accounts.transfer_state.key() != _transfer_state {
+            panic!("Escrow account is not correct.");
+        }
+
+        **ctx.accounts.transfer_state.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.sender.try_borrow_mut_lamports()? += amount;
+  
+        Ok(())
+    }
     
+    pub fn transfer_sol(ctx: Context<TransferSol>, transfer_idx: u64) -> Result<()> {
+        if Stage::from(ctx.accounts.transfer_state.stage)? != Stage::FundsDeposited {
+            msg!("Stage is invalid, state stage is {}", ctx.accounts.transfer_state.stage);
+            return Err(ErrorCode::StageInvalid.into());
+        }
+
+        let amount = ctx.accounts.transfer_state.amount;
+        let seed0 = b"state";
+        let seed1 = transfer_idx.to_le_bytes(); 
+        let seed2 = ctx.accounts.sender.key();
+        let seed3 = ctx.accounts.receiver.key();
+
+        let (_transfer_state, _transfer_state_bump) =
+            Pubkey::find_program_address(&[
+                seed0.as_ref(),
+                seed1.as_ref(),
+                seed2.as_ref(),
+                seed3.as_ref()
+            ],    
+            ctx.program_id);
+   
+        if ctx.accounts.transfer_state.key() != _transfer_state {
+            panic!("Escrow account is not correct.");
+        }
+
+        **ctx.accounts.transfer_state.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.receiver.try_borrow_mut_lamports()? += amount;
+
+        Ok(())
+    }
+
     pub fn initialize_token(ctx: Context<InitializeToken>, transfer_idx: u64, amount: u64) -> ProgramResult {
         
         let state = &mut ctx.accounts.transfer_state;
@@ -30,7 +121,7 @@ pub mod safe_transfer {
         state.mint = ctx.accounts.mint.key().clone();
         state.amount = amount;
 
-        msg!("Initialized new Safe Transfer instance for {}", amount);
+        msg!("Initialized new Safe Transfer Token for {}", amount);
        
         let transfer_instruction = Transfer{
             from: ctx.accounts.token_withdraw.to_account_info(),
@@ -197,6 +288,82 @@ impl Stage {
 
 #[derive(Accounts)]
 #[instruction(transfer_idx: u64,amount: u64)]
+pub struct InitializeSol<'info>{
+    #[account(mut)]
+    sender: Signer<'info>,    
+    /// CHECK: This is not dangerous because the program doesn't read or write from this account               
+    receiver: AccountInfo<'info>,
+    
+    #[account(
+        init,
+        payer = sender,
+        seeds = [ b"state".as_ref(),
+                  transfer_idx.to_le_bytes().as_ref(),
+                  sender.key().as_ref(),
+                  receiver.key().as_ref()],
+        bump,
+        space = TransferState::space(),
+    )]
+    transfer_state: Account<'info, TransferState>,
+  
+    system_program: Program<'info, System>,
+    //token_program: Program<'info, Token>,
+    rent: Sysvar<'info, Rent>,
+}
+
+
+#[derive(Accounts)]
+#[instruction(transfer_idx: u64)]
+pub struct CancelSol<'info> {
+    #[account(mut)]
+    sender: Signer<'info>,
+    /// CHECK: "no signature required"
+    receiver: AccountInfo<'info>,
+    #[account(
+        mut,
+        seeds=[b"state".as_ref(), 
+               transfer_idx.to_le_bytes().as_ref(),        
+               sender.key().as_ref(), 
+               receiver.key.as_ref()], 
+        bump,
+        has_one = sender,
+        has_one = receiver,
+        close = sender,
+    )]
+    transfer_state: Account<'info, TransferState>,
+    system_program: Program<'info, System>,
+}
+
+
+#[derive(Accounts)]
+#[instruction(transfer_idx: u64)]
+pub struct TransferSol<'info> {
+    /// CHECK: "no signature required"
+    #[account(mut)]
+    sender: AccountInfo<'info>,
+    #[account(mut)]
+    receiver: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds=[b"state".as_ref(), 
+               transfer_idx.to_le_bytes().as_ref(),
+               sender.key().as_ref(), 
+               receiver.key.as_ref()], 
+        bump,
+        has_one = sender,
+        has_one = receiver,
+        close = sender,
+    )]
+    transfer_state: Account<'info, TransferState>,
+    
+    system_program: Program<'info, System>,
+    //token_program: Program<'info, Token>, 
+}
+
+
+#[derive(Accounts)]
+#[instruction(transfer_idx: u64,amount: u64)]
 pub struct InitializeToken<'info>{
     #[account(mut)]
     sender: Signer<'info>,    
@@ -282,7 +449,7 @@ pub struct CancelToken<'info> {
                mint.key().as_ref() ],
         bump,
     )]
-    escrow_wallet: Account<'info, TokenAccount>,    
+    escrow_wallet: Account<'info, TokenAccount>,
     token_program: Program<'info, Token>,   
 }
 
@@ -328,7 +495,7 @@ pub struct TransferToken<'info> {
     )]
     escrow_wallet: Account<'info, TokenAccount>,    
   
-    system_program: Program<'info, System>,
+    //system_program: Program<'info, System>,
     token_program: Program<'info, Token>, 
 }
 
