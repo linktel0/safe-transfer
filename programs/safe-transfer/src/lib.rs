@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_lang::solana_program::entrypoint::ProgramResult;
 use anchor_spl::{token::{CloseAccount, Mint, Token, TokenAccount, Transfer}};
-
+use bs58;
 declare_id!("BpCbo5wS53SLmnppnPeZCi271V87s4MkiT9YijMLxC36");
 
 #[error_code]
@@ -24,9 +24,11 @@ pub mod safe_transfer {
     pub fn initialize_sol(ctx: Context<InitializeSol>, transfer_idx: u64, amount: u64) -> ProgramResult {
         
         let transfer_state = &mut ctx.accounts.transfer_state;
+        let pubkey_vec = bs58::decode("So11111111111111111111111111111111111111112").into_vec().unwrap();
         transfer_state.transfer_idx = transfer_idx;
         transfer_state.sender = ctx.accounts.sender.key().clone();
         transfer_state.receiver = ctx.accounts.receiver.key().clone();
+        transfer_state.mint = Pubkey::new(&pubkey_vec);
         transfer_state.amount = amount;
 
         msg!("Initialized new Safe Transfer Sol for {}", amount);
